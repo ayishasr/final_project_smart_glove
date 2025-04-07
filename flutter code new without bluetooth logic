@@ -1,0 +1,248 @@
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'dart:async';
+import 'package:translator/translator.dart';
+import 'package:flutter_tts/flutter_tts.dart';
+
+void main() {
+  runApp(MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      home: MessageScreen(),
+      theme: ThemeData(
+        fontFamily: 'Roboto',
+        colorScheme: ColorScheme.light(
+          primary: Color(0xFFB39DDB),
+          onPrimary: Colors.white,
+          background: Color(0xFFF3E5F5),
+          onBackground: Colors.deepPurple.shade900,
+        ),
+        textTheme: TextTheme(
+          bodyMedium: TextStyle(color: Colors.deepPurple.shade900),
+        ),
+      ),
+    );
+  }
+}
+
+class MessageScreen extends StatefulWidget {
+  @override
+  _MessageScreenState createState() => _MessageScreenState();
+}
+
+class _MessageScreenState extends State<MessageScreen> {
+  String _receivedMessage = '';
+  String _translatedMessage = 'Hello!';
+  String _previousMessage = '';
+  bool _isLoading = false;
+  bool _isTranslating = false;
+  Timer? _timer;
+  String _selectedLanguage = 'en';
+  final translator = GoogleTranslator();
+  final FlutterTts flutterTts = FlutterTts();
+
+  Future<void> _startTranslation() async {
+    setState(() {
+      _isTranslating = true;
+      _isLoading = true;
+      _translatedMessage = 'Translating...';
+    });
+
+    try {
+      final response = await http.get(
+        Uri.parse('https://render-flask-server.onrender.com/echo_message'),
+        headers: {'Content-Type': 'application/json'},
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        setState(() {
+          _receivedMessage = data['received_message'].toString();
+          _isLoading = false;
+        });
+        _translateAndSpeak();
+        _timer = Timer.periodic(Duration(seconds: 1), (Timer timer) {
+          _fetchTranslation();
+        });
+      } else {
+        setState(() {
+          _translatedMessage = 'Failed to start translation';
+          _isLoading = false;
+          _isTranslating = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _translatedMessage = 'Error: $e';
+        _isLoading = false;
+        _isTranslating = false;
+      });
+    }
+  }
+
+  Future<void> _fetchTranslation() async {
+    try {
+      final response = await http.get(
+        Uri.parse('https://render-flask-server.onrender.com/echo_message'),
+        headers: {'Content-Type': 'application/json'},
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        setState(() {
+          _receivedMessage = data['received_message'].toString();
+        });
+        _translateAndSpeak();
+      } else {
+        print('Failed to fetch translation');
+      }
+    } catch (e) {
+      print('Error fetching translation: $e');
+    }
+  }
+
+  Future<void> _translateAndSpeak() async {
+    try {
+      final translation = await translator.translate(_receivedMessage, to: _selectedLanguage);
+      setState(() {
+        _translatedMessage = translation.text;
+      });
+
+      if (_translatedMessage != _previousMessage) {
+        await flutterTts.setLanguage(_selectedLanguage);
+        await flutterTts.speak(_translatedMessage);
+        _previousMessage = _translatedMessage;
+      }
+    } catch (e) {
+      print('Translation or TTS error: $e');
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Sign Language Translator'),
+        backgroundColor: Colors.purple[100],
+        elevation: 2,
+      ),
+      body: Container(
+        color: Colors.purple[50],
+        width: double.infinity,
+        padding: EdgeInsets.symmetric(horizontal: 24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            SizedBox(height: 30), // more spacing from appbar
+            Text(
+              'Select Preferred Language:',
+              style: TextStyle(
+                fontSize: 25,
+                fontWeight: FontWeight.w500,
+                color: Colors.deepPurple[700],
+              ),
+            ),
+            SizedBox(height: 10),
+            Center(
+              child: DropdownButton<String>(
+                value: _selectedLanguage,
+                onChanged: (String? newValue) {
+                  setState(() {
+                    _selectedLanguage = newValue!;
+                  });
+                },
+                items: <String>['en', 'hi', 'ml', 'fr', 'es']
+                    .map<DropdownMenuItem<String>>((String value) {
+                  return DropdownMenuItem<String>(
+                    value: value,
+                    child: Text(
+                      _getLanguageName(value),
+                      style: TextStyle(color: Colors.deepPurple[800]),
+                    ),
+                  );
+                }).toList(),
+                dropdownColor: Colors.white,
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            Spacer(),
+            if (!_isTranslating) ...[
+              ElevatedButton(
+                onPressed: _startTranslation,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.deepPurple[400],
+                  foregroundColor: Colors.white,
+                  padding: EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                  textStyle: TextStyle(fontSize: 25, fontWeight: FontWeight.w500),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                child: Text('Start Translation'),
+              ),
+              SizedBox(height: 30),
+              Text(
+                'Hello!',
+                style: TextStyle(
+                  fontSize: 45,
+                  fontWeight: FontWeight.w400,
+                  color: Colors.deepPurple[700],
+                ),
+              ),
+            ] else ...[
+              if (_isLoading)
+                CircularProgressIndicator(
+                  valueColor:
+                  AlwaysStoppedAnimation<Color>(Colors.deepPurple),
+                )
+              else
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 100.0),
+                  child: Text(
+                    _translatedMessage,
+                    style: TextStyle(
+                      fontSize: 42,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.deepPurple[800],
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+            ],
+            Spacer(),
+          ],
+        ),
+      ),
+    );
+  }
+
+
+  String _getLanguageName(String languageCode) {
+    switch (languageCode) {
+      case 'en':
+        return 'English';
+      case 'hi':
+        return 'Hindi';
+      case 'ml':
+        return 'Malayalam';
+      case 'fr':
+        return 'French';
+      case 'es':
+        return 'Spanish';
+      default:
+        return 'Unknown';
+    }
+  }
+}
