@@ -1,0 +1,72 @@
+// this python script is for sending http POST requests to server - for sending the sensor values from the serial monitor for prediction
+
+import serial
+import requests
+import time
+import json
+
+SERIAL_PORT = 'COM18'  # Replace with your Arduino's serial port
+BAUD_RATE = 9600
+SERVER_URL = 'https://render-flask-server.onrender.com/predict'  # Replace with your Render app URL
+NUM_FEATURES = 11 
+NUM_TIMESTEPS = 30
+
+sensor_buffer = []
+
+try:
+    ser = serial.Serial(SERIAL_PORT, BAUD_RATE)
+    print(f"Connected to {SERIAL_PORT}")
+
+    while True:
+        try:
+            # print(len(sensor_buffer))
+            raw_bytes = ser.readline()
+            try:
+                raw_data = raw_bytes.decode('utf-8').strip()
+            except UnicodeDecodeError:
+                print("Decoding error! Skipping this data...")
+                continue  # Skip corrupted data
+
+            # print("Received data:", raw_data)
+
+            # Ensure data only contains valid numeric values and commas
+            raw_data = ''.join(c if c.isdigit() or c in ",.-" else "" for c in raw_data)
+
+            try:
+                values = list(map(float, raw_data.split(',')))
+            except ValueError:
+                print(f"Invalid data format: {raw_data}. Skipping...")
+                continue
+
+            if len(values) != NUM_FEATURES:
+                print(f"Invalid data received (expected {NUM_FEATURES}, got {len(values)}). Skipping...")
+                continue
+
+            sensor_buffer.append(values)
+
+            if len(sensor_buffer) > NUM_TIMESTEPS:
+                sensor_buffer.pop(0)
+
+            if len(sensor_buffer) == NUM_TIMESTEPS:
+                print("Collected 30 timesteps, sending to server...")
+
+                # Prepare JSON payload
+                data = {"sensor_values": sensor_buffer}
+
+                sensor_buffer = []
+
+                # Send data to server
+                response = requests.post(SERVER_URL, json=data)
+                response.raise_for_status()
+                print(f"Server response: {response.text}")
+
+
+        except (ValueError, requests.exceptions.RequestException, UnicodeDecodeError) as e:
+            print(f"Error: {e}")
+
+except serial.SerialException as e:
+    print(f"Could not open serial port: {e}")
+
+except KeyboardInterrupt:
+    print("Stopping script...")
+    ser.close()
