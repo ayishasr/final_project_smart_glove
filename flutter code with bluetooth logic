@@ -1,0 +1,361 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
+import 'package:flutter/material.dart';
+import 'package:tflite_flutter/tflite_flutter.dart';
+import 'package:flutter/services.dart' show rootBundle;
+import 'package:tuple/tuple.dart';
+import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
+import 'package:translator/translator.dart';
+import 'package:flutter_tts/flutter_tts.dart';
+
+Tuple2<List<double>, List<double>>? meanStd;
+
+final ColorScheme customColorScheme = ColorScheme(
+  brightness: Brightness.light,
+  primary: Color(0xFF6200EA),
+  onPrimary: Colors.white,
+  secondary: Color(0xFF03DAC6),
+  onSecondary: Colors.black,
+  error: Color(0xFFB00020),
+  onError: Colors.white,
+  surface: Color(0xFFF5F5F5),
+  onSurface: Colors.black,
+);
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  meanStd = await loadScaler();
+  runApp(const MyApp());
+}
+
+Future<Tuple2<List<double>, List<double>>> loadScaler() async {
+  String jsonString = await rootBundle.loadString('assets/scaler.json');
+  Map<String, dynamic> jsonMap = json.decode(jsonString);
+  List<double> mean = List<double>.from(jsonMap['mean']);
+  List<double> std = List<double>.from(jsonMap['std']);
+  return Tuple2(mean, std);
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        colorScheme: customColorScheme,
+        useMaterial3: true,
+      ),
+      home: const MyHomePage(),
+      routes: {
+        '/modelInput': (context) => const ModelInputScreen(title: 'Smart Glove App'),
+      },
+    );
+  }
+}
+
+class MyHomePage extends StatelessWidget {
+  const MyHomePage({super.key});
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('SMART GLOVE APP')),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text(
+              'Welcome to Smart Glove App',
+              style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pushNamed(context, '/modelInput');
+              },
+              child: const Text('Start Translation Now!'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ModelInputScreen extends StatefulWidget {
+  const ModelInputScreen({super.key, required this.title});
+  final String title;
+
+  @override
+  State<ModelInputScreen> createState() => _ModelInputScreenState();
+}
+
+class _ModelInputScreenState extends State<ModelInputScreen> {
+  FlutterBluetoothSerial bluetooth = FlutterBluetoothSerial.instance;
+  BluetoothConnection? connection;
+  bool isConnecting = false;
+  bool get isConnected => connection != null && connection!.isConnected;
+  String connectionStatus = 'Not Connected';
+  final translator = GoogleTranslator();
+  Interpreter? _interpreter;
+  FlutterTts flutterTts = FlutterTts();
+  String _prediction = '';
+  String translated_prediction = '';
+  String predictionLanguage = 'en';
+  String selectedLanguage = 'en';
+  final List<String> classes = [
+    'A', 'B', 'BAD', 'C', 'D', 'DEAF', 'E', 'F', 'FINE', 'G', 'GOOD', 'GOODBYE',
+    'H', 'HELLO', 'HUNGRY', 'I', 'J', 'K', 'L', 'M', 'ME', 'N', 'NO', 'O', 'P',
+    'PLEASE', 'Q', 'R', 'S', 'SORRY', 'T', 'THANK YOU', 'U', 'V', 'W', 'X', 'Y',
+    'YES', 'YOU', 'Z'
+  ];
+  final Map<String, String> languages = {
+    'en': 'English',
+    'ml': 'Malayalam',
+    'hi': 'Hindi',
+    'es': 'Spanish',
+    'fr': 'French',
+  };
+  List<List<double>> sensorBuffer = [];
+  Timer? dataCollectionTimer;
+  bool isPredicting = false;
+  DateTime? lastPredictionTime;
+  final Duration predictionInterval = Duration(seconds: 5); // Adjust as needed
+
+  @override
+  void initState() {
+    super.initState();
+    loadModel();
+    connectToHC05();
+  }
+  @override
+  void dispose() {
+    connection?.dispose();
+    dataCollectionTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> connectToHC05() async {
+    setState(() {
+      isConnecting = true;
+      connectionStatus = 'Connecting...';
+    });
+
+    try {
+      List<BluetoothDevice> devices =
+      await FlutterBluetoothSerial.instance.getBondedDevices();
+
+      for (BluetoothDevice device in devices) {
+        if (device.name == "HC-05") {
+          try {
+            connection = await BluetoothConnection.toAddress(device.address);
+            setState(() {
+              isConnecting = false;
+              connectionStatus = 'Connected';
+            });
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text("Connected to HC-05")),
+            );
+            await Future.delayed(Duration(milliseconds: 500));
+            startDataCollection();
+            return;
+          } catch (e) {
+            setState(() {
+              isConnecting = false;
+              connectionStatus = 'Connection Failed';
+            });
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text("Connection failed: $e")),
+            );
+            return;
+          }
+        }
+      }
+      setState(() {
+        isConnecting = false;
+        connectionStatus = 'HC-05 Not Found';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("HC-05 not found")),
+      );
+    } catch (e) {
+      setState(() {
+        isConnecting = false;
+        connectionStatus = 'Bluetooth Error';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Bluetooth error: $e")),
+      );
+    }
+  }
+
+  void startDataCollection() {
+    if (isConnected) {
+      dataCollectionTimer =
+          Timer.periodic(Duration(milliseconds: 100), (timer) async {
+            if (connection != null && connection!.isConnected) {
+              connection!.input!.listen((Uint8List data) {
+                String receivedData = String.fromCharCodes(data).trim();
+                List<String> values = receivedData.split(',');
+                if (values.length == 11) {
+                  try {
+                    List<double> sensorValues =
+                    values.map((v) => double.parse(v)).toList();
+                    sensorBuffer.add(sensorValues);
+                    if (sensorBuffer.length == 30) {
+                      processSensorData();
+                      sensorBuffer.clear();
+                    }
+                  } catch (e) {
+                    print("Error parsing sensor data: $e");
+                  }
+                }
+              });
+            } else {
+              timer.cancel();
+            }
+          });
+    }
+  }
+
+  Future<void> loadModel() async {
+    _interpreter =
+    await Interpreter.fromAsset('assets/sign_language_model.tflite');
+  }
+
+  List<List<List<double>>> preprocessInput(List<List<double>> input) {
+    if (meanStd == null) {
+      throw Exception("Scaler not initialized");
+    }
+    if (input.length != 30 || input[0].length != 11) {
+      throw Exception("Invalid input dimensions");
+    }
+
+    List<List<double>> scaledInput = [];
+    for (int i = 0; i < 30; i++) {
+      List<double> scaledTimestep = [];
+      for (int j = 0; j < 11; j++) {
+        scaledTimestep.add((input[i][j] - meanStd!.item1[j]) / meanStd!.item2[j]);
+      }
+      scaledInput.add(scaledTimestep);
+    }
+    return [scaledInput];
+  }
+
+  void processSensorData() async {
+    if (isPredicting) return;
+
+    if (lastPredictionTime != null &&
+        DateTime.now().difference(lastPredictionTime!) < predictionInterval) {
+      return; // Wait before next prediction
+    }
+
+    isPredicting = true;
+    try {
+      List<List<List<double>>> input = preprocessInput(sensorBuffer);
+      var output = List.filled(1, 0).reshape([1, 1]);
+      _interpreter?.run(input, output);
+      int predictionIndex = output[0][0].toInt();
+      String predictedGesture = classes[predictionIndex];
+      if (predictedGesture != _prediction) {
+        setState(() {
+          _prediction = predictedGesture;
+        });
+        translateGesture(_prediction);
+        lastPredictionTime = DateTime.now();
+      }
+    } catch (e) {
+      print("Error during prediction: $e");
+    } finally {
+      isPredicting = false;
+    }
+  }
+
+  Future<void> translateGesture(String gesture) async {
+    if (selectedLanguage != 'en') {
+      final translated = await translator.translate(
+        gesture,
+        from: predictionLanguage,
+        to: selectedLanguage,
+      );
+      setState(() {
+        translated_prediction = translated.text;
+      });
+    } else {
+      setState(() {
+        translated_prediction = gesture;
+      });
+    }
+    _speakGesture(translated_prediction);
+  }
+
+  Future<void> _speakGesture(String text) async {
+    String ttsLangCode = 'en-US';
+
+    if (selectedLanguage == 'es') {
+      ttsLangCode = 'es-ES';
+    } else if (selectedLanguage == 'hi') {
+      ttsLangCode = 'hi-IN';
+    } else if (selectedLanguage == 'fr') {
+      ttsLangCode = 'fr-FR';
+    } else if (selectedLanguage == 'ml') {
+      ttsLangCode = 'ml-IN';
+    }
+
+    await flutterTts.setLanguage(ttsLangCode);
+    await flutterTts.speak(text);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Translating Sign Language..')),
+      body: Padding(
+        padding: EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('Connection Status: $connectionStatus'),
+            ElevatedButton(
+              onPressed: isConnecting ? null : connectToHC05,
+              child: isConnecting
+                  ? const CircularProgressIndicator()
+                  : Text(isConnected ? 'Disconnect' : 'Connect to HC-05'),
+            ),
+            Text('Select Language:',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            SizedBox(height: 10),
+            DropdownButton<String>(
+              value: selectedLanguage,
+              items: languages.entries
+                  .map((entry) => DropdownMenuItem(
+                  value: entry.key, child: Text(entry.value)))
+                  .toList(),
+              onChanged: (String? newLanguage) {
+                setState(() {
+                  predictionLanguage = selectedLanguage;
+                  selectedLanguage = newLanguage!;
+                });
+                translateGesture(_prediction);
+              },
+            ),
+            SizedBox(height: 25, width: 35),
+            Text('Predicted Gesture:',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            SizedBox(height: 12),
+            Container(
+              padding: EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                  border: Border.all(color: Colors.grey),
+                  borderRadius: BorderRadius.circular(8)),
+              child: Text(translated_prediction, style: TextStyle(fontSize: 16)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
