@@ -1,0 +1,62 @@
+#include <SoftwareSerial.h>
+#include <Wire.h>
+#include <MPU6050.h>
+
+SoftwareSerial BTSerial(10, 11); // RX | TX
+MPU6050 mpu;
+
+const int flex1 = A0;
+const int flex2 = A1;
+const int flex3 = A2;
+const int flex4 = A3;
+const int flex5 = A6;
+
+void setup() {
+    Serial.begin(9600);  // For debugging via USB
+    BTSerial.begin(9600); // For HC-05 Bluetooth module
+    Wire.begin();
+    mpu.initialize();
+    if (!mpu.testConnection()) {
+        Serial.println("MPU6050 connection failed");
+        while (1);
+    }
+}
+
+void loop() {
+    // Read flex sensor values
+    int flexVal1 = analogRead(flex1);
+    int flexVal2 = analogRead(flex2);
+    int flexVal3 = analogRead(flex3);
+    int flexVal4 = analogRead(flex4);
+    int flexVal5 = analogRead(flex5);
+
+    // Read MPU6050 accelerometer & gyroscope values
+    int16_t ax, ay, az, gx, gy, gz;
+    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+
+    // Convert raw values if necessary (optional)
+    float ax_scaled = ax;
+    float ay_scaled = ay;
+    float az_scaled = az;
+    float gx_scaled = gx;
+    float gy_scaled = gy;
+    float gz_scaled = gz;
+
+    // Create a comma-separated string
+    String dataString = String(flexVal1) + "," + String(flexVal2) + "," +
+                        String(flexVal3) + "," + String(flexVal4) + "," + String(flexVal5) + "," +
+                        String(ax_scaled) + "," + String(ay_scaled) + "," + String(az_scaled) + "," +
+                        String(gx_scaled) + "," + String(gy_scaled) + "," + String(gz_scaled);
+
+    // String dataString = String(flexVal1) + "," + String(flexVal2) + "," +
+    //                     String(flexVal3) + "," + String(flexVal4) + "," + String(flexVal5) + "," +
+    //                     String(ax_scaled) + "," + String(ay_scaled) + "," + String(az_scaled);
+
+    // Send data via Bluetooth (HC-05)
+    BTSerial.println(dataString);
+
+    // Also print to Serial Monitor for debugging
+    Serial.println(dataString);
+
+    delay(100); // Small delay to prevent excessive data flow
+}
