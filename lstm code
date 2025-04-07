@@ -1,0 +1,94 @@
+import joblib
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras.utils import to_categorical
+import tensorflow as tf
+
+# Load the training and testing data
+train_data = pd.read_csv('/content/train.csv')
+test_data = pd.read_csv('/content/test.csv')
+
+# Select only 11 required features
+feature_columns = ['Flex1', 'Flex2', 'Flex3', 'Flex4', 'Flex5',
+                   'AccelX', 'AccelY', 'AccelZ', 'GyroX', 'GyroY', 'GyroZ']
+
+label_column = 'Gesture'
+
+# Convert columns to numeric and drop NaN rows
+train_data[feature_columns] = train_data[feature_columns].apply(pd.to_numeric, errors='coerce')
+test_data[feature_columns] = test_data[feature_columns].apply(pd.to_numeric, errors='coerce')
+train_data = train_data.dropna(subset=feature_columns)
+test_data = test_data.dropna(subset=feature_columns)
+
+# Preprocess features using StandardScaler
+scaler = StandardScaler()
+X_train = scaler.fit_transform(train_data[feature_columns].values)
+X_test = scaler.transform(test_data[feature_columns].values)
+joblib.dump(scaler, 'scaler1.pkl')  # Save scaler for later use
+
+# Label encoding and one-hot encoding for gestures
+label_encoder = LabelEncoder()
+y_train = to_categorical(label_encoder.fit_transform(train_data[label_column]))
+y_test = to_categorical(label_encoder.transform(test_data[label_column]))
+
+np.save("label_classes.npy", label_encoder.classes_)
+
+# Define sequence length (30 timesteps)
+sequence_length = 30
+
+# Create sequences for training and testing
+X_train_seq, y_train_seq = [], []
+X_test_seq, y_test_seq = [], []
+
+for i in range(0, len(X_train) - sequence_length + 1, sequence_length):
+    X_train_seq.append(X_train[i:i + sequence_length])
+    y_train_seq.append(y_train[i + sequence_length - 1])  # Last label of the sequence
+
+for i in range(0, len(X_test) - sequence_length + 1, sequence_length):
+    X_test_seq.append(X_test[i:i + sequence_length])
+    y_test_seq.append(y_test[i + sequence_length - 1])
+
+# Convert to NumPy arrays
+X_train_seq, y_train_seq = np.array(X_train_seq), np.array(y_train_seq)
+X_test_seq, y_test_seq = np.array(X_test_seq), np.array(y_test_seq)
+
+# Build LSTM model
+model = Sequential()
+model.add(LSTM(64, input_shape=(sequence_length, len(feature_columns))))  # (30, 11)
+model.add(Dense(y_train_seq.shape[1], activation='softmax'))
+
+model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+
+# Train the model
+model.fit(X_train_seq, y_train_seq, epochs=50, batch_size=32, validation_split=0.2)
+
+# Evaluate the model
+test_loss, test_acc = model.evaluate(X_test_seq, y_test_seq)
+print(f'Test Accuracy: {test_acc:.2f}')
+
+# Predict a sample
+predicted = model.predict(X_test_seq[5].reshape(1, sequence_length, len(feature_columns)))
+pre_class = np.argmax(predicted)
+print(f'The predicted class index: {pre_class}')
+print(label_encoder.inverse_transform([pre_class]))
+
+# Convert to TensorFlow Lite format
+converter = tf.lite.TFLiteConverter.from_keras_model(model)
+converter.experimental_enable_resource_variables = True  # Enable resource variables
+converter.target_spec.supported_ops = [
+    tf.lite.OpsSet.TFLITE_BUILTINS,
+    tf.lite.OpsSet.SELECT_TF_OPS
+]
+converter._experimental_lower_tensor_list_ops = False
+
+tflite_model = converter.convert()
+
+# Save the TFLite model
+tflite_model_path = 'SMART_GLOVEmodel.tflite'
+with open(tflite_model_path, 'wb') as f:
+    f.write(tflite_model)
+
+print(f"Model converted and saved as '{tflite_model_path}'")
